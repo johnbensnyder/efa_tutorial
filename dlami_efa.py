@@ -67,7 +67,7 @@ while not all(['4.0.3' in i['stdout'] for i in  version_check]):
     sleep(10)
     ssh_client.run_on_all('./efa_setup.sh')
     version_check = ssh_client.run_on_all('/opt/amazon/openmpi/bin/mpirun --version')
-
+print(version_check[0]['stdout'])
 ################################################################
 # Check to make sure driver is updated
 # should be 4.0.3
@@ -173,6 +173,10 @@ ssh_client.run_on_all('docker exec mpicont /bin/bash -c "cd /workspace/shared_wo
 
 ssh_client.run_on_all('docker exec mpicont /bin/bash -c "cd /workspace/shared_workspace/nccl-tests && make MPI=1 MPI_HOME=/usr/local/ NCCL_HOME=/nccl/build"')
 
+# make sure coco download is complete before unarchiving
+while not all([i.done() for i in coco_thread]):
+    sleep(1)
+    continue
 ssh_client.run_on_all('cd ~/shared_workspace/data/coco && tar -xf coco.tar')
 
 ssh_client.run_on_all("cd shared_workspace && git clone -b staging https://github.com/aws-samples/deep-learning-models")
