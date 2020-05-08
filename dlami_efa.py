@@ -22,14 +22,19 @@ sys.path.append('efa_tutorial')
 import ssh
 from time import sleep
 
-sleep(30)
-instances = [instance['InstanceId'] for instance in response['Instances']]
-status = ec2_resource.meta.client.describe_instances(InstanceIds=instances)
-public_ips = [instance['PublicIpAddress'] for instance in status['Reservations'][0]['Instances']]
-ssh_client = ssh.SSH(public_ips, '/Users/jbsnyder/.aws/jbsnyder.pem')
-# wait a few seconds and run a simple command to make sure instances are up
-ssh_client.run_on_all('lspci')
-
+while True:
+    try:
+        instances = [instance['InstanceId'] for instance in response['Instances']]
+        status = ec2_resource.meta.client.describe_instances(InstanceIds=instances)
+        public_ips = [instance['PublicIpAddress'] for instance in status['Reservations'][0]['Instances']]
+        ssh_client = ssh.SSH(public_ips, '/Users/jbsnyder/.aws/jbsnyder.pem')
+        # wait a few seconds and run a simple command to make sure instances are up
+        pci = ssh_client.run_on_all('lspci')
+        break
+    except:
+        sleep(10)
+        continue
+print(pci[0]['stdout'])
 ################################################################
 # Use local AWS credentials for EC2
 ################################################################
@@ -56,6 +61,19 @@ ssh_client.scp_local_to_all('efa_tutorial/setup_scripts/efa_setup.sh', 'efa_setu
 
 ssh_client.run_on_all('./efa_setup.sh')
 
+version_check = ssh_client.run_on_all('/opt/amazon/openmpi/bin/mpirun --version')
+
+while not all(['4.0.3' in i['stdout'] for i in  version_check]):
+    sleep(10)
+    ssh_client.run_on_all('./efa_setup.sh')
+    version_check = ssh_client.run_on_all('/opt/amazon/openmpi/bin/mpirun --version')
+
+################################################################
+# Check to make sure driver is updated
+# should be 4.0.3
+################################################################
+
+
 ################################################################
 # mount nvme drive
 ################################################################
@@ -66,39 +84,48 @@ ssh_client.run_on_all('sudo mount /dev/nvme0n1 ~/shared_workspace')
 ssh_client.run_on_all('mkdir -p ~/shared_workspace/data')
 ssh_client.run_on_all('sudo chmod -R 777 ~/shared_workspace')
 
+# download coco data
+
+download_coco = "aws s3 cp --recursive s3://jbsnyder-sagemaker/faster-rcnn/data/ ~/shared_workspace/data"
+
+coco_thread = ssh_client.run_on_all(download_coco, wait=False)
+
 ################################################################
 # Build Docker image Takes about 10 minutes
 # Only run first time
 ################################################################
 
-dockerhub_user = 'johnbensnyder'
-dockerhub_repo = 'efa'
-dockerhub_tag = 'dlami_28'
+first_run=False
 
-ssh_client.scp_local_to_master('efa_tutorial/docker', 'docker', recursive=True)
-ssh_client.run_on_master('cp -R /opt/amazon/efa docker/')
-ssh_client.run_on_master('cd docker && docker build -t {}/{}:{} .'.format(dockerhub_user,
-                                                                          dockerhub_repo,
-                                                                          dockerhub_tag))
+if first_run:
+    dockerhub_user = 'johnbensnyder'
+    dockerhub_repo = 'efa'
+    dockerhub_tag = 'dlami_28'
+
+    ssh_client.scp_local_to_master('efa_tutorial/docker', 'docker', recursive=True)
+    ssh_client.run_on_master('cp -R /opt/amazon/efa docker/')
+    ssh_client.run_on_master('cd docker && docker build -t {}/{}:{} .'.format(dockerhub_user,
+                                                                              dockerhub_repo,
+                                                                              dockerhub_tag))
 
 ################################################################
 # Deploy Docker image to all nodes
 # Only run first time
 ################################################################
+if first_run:
+    # Warning: bug in ipykernel can sometimes cause password to echo. recommend run in standard python
+    import getpass
+    dh_password = getpass.getpass('enter dockerhub password')
+    ssh_client.run_on_master('docker login --username {} --password {}'.format(dockerhub_user, dh_password))
+    del dh_password
 
-# Warning: bug in ipykernel can sometimes cause password to echo. recommend run in standard python
-import getpass
-dh_password = getpass.getpass('enter dockerhub password')
-ssh_client.run_on_master('docker login --username {} --password {}'.format(dockerhub_user, dh_password))
-del dh_password
+    ssh_client.run_on_master('docker push {}/{}:{}'.format(dockerhub_user,
+                                                           dockerhub_repo,
+                                                           dockerhub_tag))
 
-ssh_client.run_on_master('docker push {}/{}:{}'.format(dockerhub_user,
-                                                       dockerhub_repo,
-                                                       dockerhub_tag))
-
-ssh_client.run_on_workers('docker pull {}/{}:{}'.format(dockerhub_user,
-                                                        dockerhub_repo,
-                                                        dockerhub_tag))
+    ssh_client.run_on_workers('docker pull {}/{}:{}'.format(dockerhub_user,
+                                                            dockerhub_repo,
+                                                            dockerhub_tag))
 
 ################################################################
 # After first run, just pull image to nodes
@@ -140,24 +167,25 @@ launch_cont = """docker run --rm -it -d --gpus all \
 
 ssh_client.run_on_all(launch_cont)
 
+# setup tests and unarchive data
+
 ssh_client.run_on_all('docker exec mpicont /bin/bash -c "cd /workspace/shared_workspace && git clone https://github.com/NVIDIA/nccl-tests.git"')
 
 ssh_client.run_on_all('docker exec mpicont /bin/bash -c "cd /workspace/shared_workspace/nccl-tests && make MPI=1 MPI_HOME=/usr/local/ NCCL_HOME=/nccl/build"')
 
-notebook = ssh.Notebook(ssh_client)
-
-notebook.get_token()
-
-download_coco = "aws s3 cp --recursive s3://jbsnyder-sagemaker/faster-rcnn/data/ ~/shared_workspace/data"
-
-ssh_client.run_on_all(download_coco)
+ssh_client.run_on_all('cd ~/shared_workspace/data/coco && tar -xf coco.tar')
 
 ssh_client.run_on_all("cd shared_workspace && git clone -b staging https://github.com/aws-samples/deep-learning-models")
 
-ssh_client.run_on_all('cd ~/shared_workspace/data/coco && tar -xf coco.tar')
+notebook = ssh.Notebook(ssh_client)
 
-"""
+print(notebook.get_token())
 
+################################################################
+# Run NCCL Tests
+################################################################
+import re
+nccl_efa_command = """
 mpirun -x FI_PROVIDER="efa" \
             --allow-run-as-root \
             -x LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/efa/lib:/usr/local/lib:/nccl/build/lib:/aws-ofi-nccl/install/lib \
@@ -172,31 +200,21 @@ mpirun -x FI_PROVIDER="efa" \
              --oversubscribe \
              /workspace/shared_workspace/nccl-tests/build/all_reduce_perf \
                  -b 8 -e 4G -f 2 -g 1 -c0
+"""
+
+efa_result = ssh_client.run_on_master('docker exec mpicont bash -c \"{}\"'.format(nccl_efa_command))
+
+efa_bandwidth = float(re.findall("\d+\.\d+", efa_result['stdout'].split(':')[-1])[0])
+print("EFA bandwidth: {}".format(efa_bandwidth))
+
+################################################################
+# Launch Training
+################################################################
 
 
+training_launch = """ 
 mpirun --allow-run-as-root \
-            -x LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/efa/lib:/usr/local/lib:/nccl/build/lib:/aws-ofi-nccl/install/lib \
-            -x NCCL_DEBUG=INFO \
-             -x NCCL_TREE_THRESHOLD=0 \
-             -H localhost:8 \
-             python /workspace/shared_workspace/deep-learning-models/models/vision/detection/tools/train_docker.py \
-             --configuration /workspace/shared_workspace/deep-learning-models/models/vision/detection/configs/docker_default_config.py \
-             --base_learning_rate 15e-3 \
-             --batch_size_per_device 4 \
-             --fp16 True \
-             --schedule 1x \
-             --warmup_init_lr_scale 3.0 \
-             --warmup_steps 1000 \
-             --use_rcnn_bn False \
-             --use_conv True \
-             --ls 0.0 \
-             --name demo
-             
-             
-
-             
-mpirun --allow-run-as-root \
-            -x FI_PROVIDER="efa" \
+            -x FI_PROVIDER=\\\"efa\\\" \
             -x LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/efa/lib:/usr/local/lib:/nccl/build/lib:/aws-ofi-nccl/install/lib \
             -x NCCL_DEBUG=INFO \
              -x NCCL_TREE_THRESHOLD=0 \
@@ -217,24 +235,11 @@ mpirun --allow-run-as-root \
              --use_conv True \
              --ls 0.0 \
              --name demo
-
-mpirun -x FI_PROVIDER="efa" \
-            --allow-run-as-root \
-            -x LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/efa/lib:/usr/local/lib:/nccl/build/lib:/aws-ofi-nccl/install/lib \
-            -x NCCL_DEBUG=INFO \
-             -x NCCL_TREE_THRESHOLD=0 \
-             -x NCCL_SOCKET_IFNAME=ens5 \
-             --hostfile /root/.ssh/hosts \
-             --mca plm_rsh_no_tree_spawn 1 -bind-to none -map-by slot -mca pml ob1 \
-             --mca btl_vader_single_copy_mechanism none \
-             --mca oob_tcp_if_include ens5 \
-             --mca btl_tcp_if_include ens5 \
-             --oversubscribe \
-             python /workspace/shared_workspace/deep-learning-models/models/vision/detection/tools/train_docker.py \
-             --configuration /workspace/shared_workspace/deep-learning-models/models/vision/detection/configs/docker_default_config.py
-
 
 """
+
+ssh_client.run_on_master('mkdir -p ~/shared_workspace/logs')
+training_thread = ssh_client.run_on_master("""nohup docker exec mpicont bash -c \"{}\" &> ~/shared_workspace/logs/out.log &""".format(training_launch))
 
 notebook.disconnect()
 
