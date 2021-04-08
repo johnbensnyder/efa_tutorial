@@ -1,0 +1,30 @@
+ImageId: "ami-0e956fe81fa11d0a9" # DLAMI 42.1
+InstanceType: "p3dn.24xlarge"
+MinCount: 4
+MaxCount: 4
+KeyName: "jbsnyder-east"
+IamInstanceProfile:
+  Name: "jbsnyder-ec2"
+Placement:
+  AvailabilityZone: "us-east-1c"
+  GroupName: "jbsnyder-efa"
+Monitoring:
+  Enabled: False
+NetworkInterfaces: # Enables EFA 
+  - SubnetId: "subnet-c24d759e"
+    DeviceIndex: 0
+    DeleteOnTermination: True
+    InterfaceType: "efa"
+    Groups:
+      - "sg-0b7a6cca873894fff"
+BlockDeviceMappings:
+  - DeviceName: "/dev/sda1"
+    Ebs:
+      # SnapshotId: "snap-"
+      VolumeSize: 1000
+      VolumeType: "gp2"
+TagSpecifications:
+  - ResourceType: "instance"
+    Tags:
+      - Key: "Name"
+        Value: "jbsnyder-mrcnn"

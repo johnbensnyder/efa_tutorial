@@ -66,9 +66,9 @@ class SSH(object):
         ssh.close()
         return results
 
-    def run_on_master(self, command, wait=True):
+    def run_on_main(self, command, wait=True):
         """
-        Run a command on the master node (first ip in list)
+        Run a command on the main node (first ip in list)
 
         Parameters
         ----------
@@ -192,9 +192,9 @@ class SSH(object):
         ssh.close()
         return results
 
-    def scp_local_to_master(self, src, dest, recursive=False, wait=True):
+    def scp_local_to_main(self, src, dest, recursive=False, wait=True):
         """
-        Copy a file from local to master
+        Copy a file from local to main
 
         Parameters
         ----------
@@ -214,9 +214,9 @@ class SSH(object):
             return task.result()
         return task
 
-    def scp_master_to_local(self, src, dest="", recursive=False, wait=True):
+    def scp_main_to_local(self, src, dest="", recursive=False, wait=True):
         """
-        Copy a file from master to local
+        Copy a file from main to local
 
         Parameters
         ----------
@@ -341,35 +341,36 @@ def create_hostfile(sh, private_ips, outfile='hosts'):
     hosts = ''
     for i, j in slots.items():
         hosts += "{0}\tslots={1}\n".format(i, j)
+    sh.run_on_all("rm -f {0}".format(outfile))
     sh.run_on_all("printf \"{0}\" >> {1}".format(hosts, outfile))
     return
 
 def create_ssh_comm(sh):
-    sh.run_on_master('ssh-keygen -t rsa -N "" -f ${HOME}/.ssh/id_rsa')
+    sh.run_on_main('ssh-keygen -t rsa -N "" -f $HOME/.ssh/id_rsa <<< y')
     sh.run_on_all('printf "Host *\n\tForwardAgent yes\n\tStrictHostKeyChecking no\n" >> ${HOME}/.ssh/config')
     sh.run_on_all('printf "\tUserKnownHostsFile=/dev/null\n" >> ${HOME}/.ssh/config')
     sh.run_on_all('printf "\tLogLevel=ERROR\n\tServerAliveInterval=30\n" >> ${HOME}/.ssh/config')
     sh.run_on_all('printf "\tUser ubuntu\n" >> ${HOME}/.ssh/config')
-    private_key = sh.run_on_master("cat $HOME/.ssh/id_rsa")
-    public_key = sh.run_on_master("cat $HOME/.ssh/id_rsa.pub")
+    private_key = sh.run_on_main("cat $HOME/.ssh/id_rsa")
+    public_key = sh.run_on_main("cat $HOME/.ssh/id_rsa.pub")
     sh.run_on_all('printf "{0}" >> $HOME/.ssh/authorized_keys'.format(public_key['stdout']))
     sh.run_on_workers('echo "{0}" >> $HOME/.ssh/id_rsa'.format(private_key['stdout']))
     sh.run_on_all('chmod 600 $HOME/.ssh/id_rsa')
     return
 
 def setup_container_communication(sh):
+    create_time = int(time())
     sh.run_on_all('mkdir ssh_container')
     sh.run_on_all('cp hosts ssh_container/')
-    sh.run_on_master('ssh-keygen -t rsa -N "" -f ${HOME}/ssh_container/id_rsa')
+    sh.run_on_main('ssh-keygen -t rsa -N "" -f $HOME/ssh_container/id_rsa <<< y')
     sh.run_on_all('printf "Host *\n\tForwardAgent yes\n\tStrictHostKeyChecking no\n" >> ${HOME}/ssh_container/config')
     sh.run_on_all('printf "\tUserKnownHostsFile=/dev/null\n" >> ${HOME}/ssh_container/config')
     sh.run_on_all('printf "\tLogLevel=ERROR\n\tServerAliveInterval=30\n" >> ${HOME}/ssh_container/config')
     sh.run_on_all('printf "\tUser ubuntu\n" >> ${HOME}/ssh_container/config')
-    private_key = sh.run_on_master("cat $HOME/ssh_container/id_rsa")
-    public_key = sh.run_on_master("cat $HOME/ssh_container/id_rsa.pub")
+    private_key = sh.run_on_main("cat $HOME/ssh_container/id_rsa")
+    public_key = sh.run_on_main("cat $HOME/ssh_container/id_rsa.pub")
     sh.run_on_all('printf "{0}" >> $HOME/ssh_container/authorized_keys'.format(public_key['stdout']))
     sh.run_on_workers('echo "{0}" >> $HOME/ssh_container/id_rsa'.format(private_key['stdout']))
-    sh.run_on_all('chmod 600 $HOME/.ssh/id_rsa')
     sh.run_on_all('sudo chown root:root ${HOME}/ssh_container/config')
     sh.run_on_all('printf "#!/bin/bash\n" >> $HOME/.ssh/mpicont.sh')
     sh.run_on_all('printf "echo \\"entering container\\"\n" >> $HOME/.ssh/mpicont.sh')
@@ -406,9 +407,6 @@ class Notebook(object):
         print(os.system("ssh -S {} -O exit ubuntu@{}".format(self.socket, host)))
 
     def get_token(self, container_name='mpicont'):
-        token = self.clush.run_on_master("docker exec {} bash -c \"jupyter notebook list\"" \
+        token = self.clush.run_on_main("docker exec {} bash -c \"jupyter notebook list\"" \
                                           .format(container_name))['stdout'].split('token=')[1].split()[0]
         return "http://localhost:{}/?token={}".format(self.notebook_port, token)
-
-
-
